@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>My App</title>
+
+    <!--App information-->
+    <meta name="Name" content="App: Custom Cycle Time Table"/>
+    <meta name="Version" content="1.0"/>
+    <meta name="Vendor" content=""/>
+
+    <!--Include SDK-->
+    <script type="text/javascript" src="/apps/2.0rc1/sdk.js"></script>
+
+    <!--App code-->
+    <script type="text/javascript">
+        var kanbanStatuses =
+        [
+            "New Feature",
+            "Kickoff",
+            "PO",
+            "Creative",
+            "Team Backlog",
+            "Coding",
+            "Acceptance Testing"
+        ];
+
+        var shirtSizeLUT =
+        {
+            3: "S",
+            5: "M",
+            8: "L"
+        };
+
+        Rally.onReady(function()
+        {
+            Ext.define("CustomApp",
+            {
+                extend: "Rally.app.App",
+                componentCls: "app",
+
+                launch: function()
+                {
+                    var self = this;
+
+                    Ext.create("Rally.data.lookback.SnapshotStore",
+                    {
+                        fetch   : [ "_UnformattedID", "_TypeHierarchy", "Name", "PlanEstimate", "c_KanbanStatus", "ScheduleState" ],
+                        hydrate : [ "c_KanbanStatus", "ScheduleState" ],
+                        filters :
+                        [
+                            {
+                                property : "_ProjectHierarchy",
+                                value    : 10148772696
+                            },
+                            {
+                                property: "_TypeHierarchy",
+                                value: { $nin: [ -51009, -51012, -51031, -51078 ] }
+                            },
+                            {
+                                property: "_ValidFrom",
+                                value: { $gt: "2013-09-13" }
+                            }
+                        ],
+                        sorters :
+                        [
+                            {
+                                property  : "_ValidTo",
+                                direction : "ASC"
+                            }
+                        ]
+                    }).load(
+                    {
+                        params:
+                        {
+                            compress: false,
+                            removeUnauthorizedSnapshots: true
+                        },
+                        callback : function(records, operation, success)
+                        {
+                            var aggregateCycleTimes = [];
+
+                            var allObjectIDs = {};
+                            Ext.Array.each(records, function(record) { allObjectIDs[record.get("ObjectID")] = record.get("ObjectID"); });
+
+                            for(var storyIndex = 0; storyIndex < Object.keys(allObjectIDs).length; storyIndex++)
+                            {
+                                (function()
+                                {
+                                    var currentObjectID = parseInt(Object.keys(allObjectIDs)[storyIndex], 10);
+                                    var recordsByStory = Ext.Array.filter(records, function(record) { return record.get("ObjectID") === currentObjectID; });
+
+                                    var currentStateOfStory = "";
+                                    var currentStateOfStorySnapshot = Ext.Array.filter(recordsByStory, function(record) { return record.get("_ValidTo").indexOf("9999") !== -1; })[0];
+                                    if(currentStateOfStorySnapshot)
+                                        currentStateOfStory = currentStateOfStorySnapshot.get("c_KanbanStatus");
+
+                                    if(currentObjectID === 11272626715)
+                                    {
+                                        Ext.Array.each(recordsByStory, function(record) { console.log(record.get("c_KanbanStatus")); });
+                                    }
+
+                                    var formattedID = (Ext.Array.contains(recordsByStory[0].get("_TypeHierarchy"), -51006) ? "DE" : "US") + recordsByStory[0].get("_UnformattedID");
+                                    var cycleTimes =
+                                    {
+                                        id: formattedID,
+                                        name: recordsByStory[0].get("Name"),
+                                        planEstimate: shirtSizeLUT[Rally.util.Array.last(recordsByStory).get("PlanEstimate")],
+                                        currentStateOfStory: currentStateOfStory
+                                    };
+
+                                    var allStatusesAreNull = true;
+
+                                    for(var i = 0; i < kanbanStatuses.length; i++)
+                                    {
+                                        var currentStatus = kanbanStatuses[i];
+
+                                        var currentSnapshot = Ext.Array.filter(recordsByStory, function(record) { return record.get("c_KanbanStatus") === currentStatus; })[0];
+                                        
+                                        if(!currentSnapshot)
+                                        {
+                                            cycleTimes[currentStatus] = null;
+                                            continue;
+                                        }
+
+                                        var firstDate = new Date(currentSnapshot.get("_ValidFrom"));
+
+                                        var nextSnapshot = Rally.util.Array.last(Ext.Array.filter(recordsByStory, function(record) { return record.get("c_KanbanStatus") === currentStatus; }));
+                                        var secondDate = new Date();
+
+                                        if(nextSnapshot && (new Date(nextSnapshot.get("_ValidTo"))).getFullYear() !== 9998)
+                                            secondDate = new Date(nextSnapshot.get("_ValidTo"));
+                                        
+                                        var cycleTime = Rally.util.DateTime.getDifference(secondDate, firstDate, "day");
+                                        cycleTimes[currentStatus] = cycleTime;
+
+                                        if(cycleTime !== null)
+                                            allStatusesAreNull = false;
+                                    }
+
+                                    if(!allStatusesAreNull)
+                                        aggregateCycleTimes.push(cycleTimes);
+                                })();
+                            }
+
+                            var myStore = Ext.create("Rally.data.custom.Store",
+                            {
+                                data: aggregateCycleTimes,
+                                pageSize: 100,
+                            });
+
+                            var columnConfig = 
+                            [
+                                {
+                                    text: "ID",
+                                    dataIndex: "id"
+                                },
+                                {
+                                    text: "Name",
+                                    dataIndex: "name",
+                                    width: "280px"
+                                },
+                                {
+                                    text: "Size",
+                                    dataIndex: "planEstimate"
+                                },
+                                {
+                                    text: "Current State",
+                                    dataIndex: "currentStateOfStory"
+                                }
+                            ];
+                                       
+                            for (var i = 0; i < kanbanStatuses.length; i++)
+                            {
+                                var columnConfigElement = {}; 
+                                columnConfigElement["text"] = kanbanStatuses[i];
+                                columnConfigElement["dataIndex"] = kanbanStatuses[i];
+                                columnConfig.push(columnConfigElement);
+                            }
+
+                            if (!self.grid)
+                            {
+                                self.grid = self.add(
+                                {
+                                    xtype: "rallygrid",
+                                    itemId: "mygrid",
+                                    store: myStore,
+                                    columnCfgs: columnConfig
+                                });
+                            }
+                        }
+                    });
+                }
+            });
+
+            Rally.launchApp("CustomApp", { name: "My Custom App" });
+        });
+    </script>
+</head>
+<body>
+</body>
+</html>
